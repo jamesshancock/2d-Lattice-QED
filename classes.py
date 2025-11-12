@@ -1,0 +1,270 @@
+from modules import *
+
+def multiply_pauli_strings(p1, p2):
+    result = []
+    phase = 1+0j
+    for a, b in zip(p1, p2):
+        res, ph = PAULI_PHASES[a][b]
+        result.append(res)
+        phase *= ph
+    return "".join(result), phase   
+
+def multiply_hamiltonian_by_constant(hamiltonian, c):
+    new_hamil = {}
+    for term, coeff in hamiltonian.items():
+        new_hamil[term] = c * coeff
+    return new_hamil
+
+def possible_directions(lattice):
+    labels = lattice.labels
+    possible_labels = list(lattice.reverse_labels.keys())
+    directions = {}
+    for j in range(lattice.n_links):
+        directions[j] = []
+        if (labels[j][0] + 1, labels[j][1]) in possible_labels: # x_link
+            directions[j].append(1)
+        if (labels[j][0], labels[j][1]+1) in possible_labels: # y_link
+            directions[j].append(2)
+    return directions
+
+class Lattice:
+    def __init__(self, L_x, L_y, gauge_truncation):
+
+        # Need to add link indexing
+
+        if L_x*L_y % 2 == 1:
+            raise ValueError(f"L_x * L_y must be even")    
+        self.L_x = L_x
+        self.L_y = L_y
+        self.labels = {}
+        self.reverse_labels = {}
+        self.gauge_truncation = gauge_truncation
+        counter = 0
+
+        for y in range(L_y):
+            for x in range(L_x):
+                self.labels[counter] = (x, y)
+                self.reverse_labels[(x, y)] = counter
+                counter += 1
+        self.n_fermion_qubits = counter
+        self.n_links = (self.L_x - 1) * self.L_y + self.L_x * (self.L_y - 1) # OBC 
+        self.qubits_per_gauge = 0 if gauge_truncation == 0 else int(np.ceil(np.log2(2*gauge_truncation+1)))
+        self.n_gauge_qubits = self.n_links*self.qubits_per_gauge
+        self.n_qubits = self.n_fermion_qubits + self.n_gauge_qubits
+        self.directions = possible_directions(self)
+
+    def get_index(self, x, y):
+        if (x, y) in self.reverse_labels:
+            return self.reverse_labels[(x, y)]
+        raise ValueError(f"Site ({x}, {y}) is out of bounds.")
+
+    def get_coordinates(self, index):
+        if index in self.labels:
+            return self.labels[index]
+        raise ValueError(f"Index {index} is out of bounds.")
+
+    def get_neighbors(self, x, y):
+        neighbors = []
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < self.L_x and 0 <= ny < self.L_y:
+                neighbors.append((nx, ny))
+        return neighbors
+    
+class Hamiltonian:
+    def __init__(self, n_qubits = 1):
+        self.hamiltonian = {'I'*n_qubits : 0}
+        self.n_qubits = n_qubits
+    
+    def multiply_hamiltonians(self, other):
+        hamil_1 = self.hamiltonian
+        if isinstance(other, Hamiltonian): hamil_2 = other.hamiltonian
+        else: hamil_2 = other
+        new_hamil = {}
+        for term1, coeff1 in hamil_1.items():
+            for term2, coeff2 in hamil_2.items():
+                new_term, phase = multiply_pauli_strings(term1, term2)
+                new_coeff = coeff1 * coeff2 * phase
+                if abs(new_coeff.imag) < 1e-12:
+                    new_coeff = new_coeff.real
+                if new_term in new_hamil:
+                    new_hamil[new_term] += new_coeff
+                else:
+                    new_hamil[new_term] = new_coeff
+        return new_hamil
+
+    def add_term(self, term, coeff):
+        if len(term) != self.n_qubits:
+            raise ValueError(f"Terms must be of length {self.n_qubits} for this Hamiltonian, you have entered a term of length {len(term)}")
+        else:
+            if term in self.hamiltonian.keys():
+                self.hamiltonian[term] += coeff
+            else:
+                self.hamiltonian[term] = coeff
+    
+    def add_hamiltonians(self, other):
+        if isinstance(other, Hamiltonian): hamil_other = other.hamiltonian
+        else : hamil_other = other
+        for key in list(hamil_other.keys()):
+            self.add_term(key, hamil_other[key])
+    
+    def to_matrix(self):
+        matrix_dict = {
+            'I': np.array([[1,0],[0,1]]),
+            'X': np.array([[0,1],[1,0]]),
+            'Y': np.array([[0,-1j],[1j,0]]),
+            'Z': np.array([[1,0],[0,-1]])
+            }
+        matrix = np.zeros((2**self.n_qubits,2**self.n_qubits), dtype=complex)
+        terms = list(self.hamiltonian.keys())
+        for term in terms:
+            temp_matrix = np.array([1])
+            for t in list(term):
+                temp_matrix = np.kron(matrix_dict[t], temp_matrix)
+            matrix += self.hamiltonian[term]*temp_matrix
+        return matrix
+    
+    def to_conjugate(self):
+        # Of note here, Pauli strings are self-conjugate - would have been good to have this class for my PT work gottem
+        hamil = self.hamiltonian
+        keys = list(hamil.keys())
+        new_hamil = {}
+        for key in keys:
+            new_hamil[key] = hamil[key].real - 1j*hamil[key].imag
+        self.conjugate = new_hamil
+        return new_hamil
+
+class CircuitBuilder:
+    def __init__(self, n_fermion_qubits, n_gauge_qubits):
+        self.n_fermion_qubits = n_fermion_qubits
+        self.n_gauge_qubits = n_gauge_qubits
+        self.n_qubits = n_fermion_qubits + n_gauge_qubits
+        self.circuit = qiskit.QuantumCircuit(self.n_qubits)
+    
+    def iSwap(self, theta, j, k):
+        self.circuit.ryy(theta/2, j, k)
+        self.circuit.rxx(theta/2, j, k)
+        return self
+    
+    def iSwap_block_calculate(self):
+        total_layers = int(self.n_fermion_qubits / 2)
+        counter = 0
+        for layer in range(total_layers):
+            qubits_to_use = list(range(layer,self.n_fermion_qubits-layer))
+            for j in range(int(len(qubits_to_use)/2)):
+                counter += 1
+        return counter
+
+    def iSwap_block(self,thetas_slice):
+        total_layers = int(self.n_fermion_qubits / 2)
+        counter = 0
+        for layer in range(total_layers):
+            qubits_to_use = list(range(layer,self.n_fermion_qubits-layer))
+            for j in range(int(len(qubits_to_use)/2)):
+                self.iSwap(thetas_slice[counter], self.n_gauge_qubits+qubits_to_use[0]+2*j, self.n_gauge_qubits+qubits_to_use[0]+2*j+1)
+                counter += 1
+        self.circuit.barrier()
+        return self
+
+    ## I know that this gauge section is not completely right yet
+    # We would have to consider the direction of the connections that are being examined, i.e., U_{\mu,x}
+
+    def gauge_gate_2(self, thetas, start_qubit):
+        self.circuit.ry(thetas[0], start_qubit)
+        self.circuit.cry(thetas[1], start_qubit, start_qubit+1)
+        return self
+    
+    def gauge_gate_3(self,thetas,start_qubit):
+        self.circuit.ry(thetas[0], start_qubit)
+        self.circuit.ry(thetas[1], start_qubit+1)
+        self.circuit.cry(thetas[2], start_qubit+1, start_qubit+2)
+        self.circuit.cry(thetas[3], start_qubit, start_qubit+2)
+        return self
+
+    def gauge_block(self,thetas_slice,truncation):
+        if truncation == 0:
+            return self
+        
+        gauge_gates = {2: self.gauge_gate_2,
+                       3: self.gauge_gate_3}
+        
+        qubits_per_gauge = int(np.ceil(np.log2(2*truncation+1)))
+       
+        for j in range(int(len(thetas_slice)/qubits_per_gauge)):
+            thetas = thetas_slice[qubits_per_gauge*j:qubits_per_gauge*j+(qubits_per_gauge)]
+            gauge_gates[qubits_per_gauge](thetas,qubits_per_gauge*j)
+        self.circuit.barrier()
+        return self
+
+    def initialize_fermions(self):
+        for k in range(self.n_gauge_qubits // 2, self.n_qubits // 2):
+            self.circuit.x(2*k + 1)
+        self.circuit.barrier()
+        return self
+    
+    def build(self):
+        return self.circuit.copy()
+
+class Measurements:
+    def __init__(self, simulator=NOISELESS_SIMULATOR):
+        self.simulator = simulator
+    
+    def measure_circuit(self, circuit, terms, shots):
+        if terms == 'I' * len(terms):
+            return {'0' * len(terms): shots}
+        
+        circuit_copy = circuit.copy()
+        for j, term in enumerate(terms):
+            if term == 'X':
+                circuit_copy.h(j)
+            elif term == 'Y':
+                circuit_copy.sdg(j)
+                circuit_copy.h(j)
+            if term in ['X', 'Y', 'Z']:
+                circuit_copy.measure(j, j)
+        transpiled_circuit = qiskit.transpile(circuit_copy, self.simulator)
+        job = self.simulator.run(transpiled_circuit, shots=shots)
+        return job.result().get_counts(transpiled_circuit)
+    
+    def expected_value_from_counts(self, counts):
+        total_shots = sum(counts.values())
+        expected_value = 0
+        for bitstring, count in counts.items():
+            parity = 1 if bitstring.count('1') % 2 == 0 else -1
+            expected_value += parity * count / total_shots
+        return expected_value
+    
+    def expected_value_hamiltonian(self, hamiltonian, circuit, shots = 1024):
+        expected_value_total = 0
+        for terms, coefficient in hamiltonian.hamiltonian.items():
+            counts = self.measure_circuit(circuit, terms, shots)
+            expected_value_term = self.expected_value_from_counts(counts)
+            expected_value_total += coefficient * expected_value_term
+        return expected_value_total
+    
+class ObservableCalculator:
+    def __init__(self, lattice, measurement_manager):
+        #
+        # Fermion qubits sit on the left end of the circuit
+        #
+        self.lattice = lattice
+        self.measurer = measurement_manager
+    
+    def charge_n(self, coordinates, circuit, shots = 1024):
+        j = self.lattice.get_index(coordinates[0], coordinates[1])
+        charge_hamiltonian = Hamiltonian(self.lattice.n_qubits)
+        I_term = 'I' * self.lattice.n_qubits
+        Z_term = I_term[:self.lattice.n_gauge_qubits+j] + 'Z' + I_term[self.lattice.n_gauge_qubits+j+1:]
+        
+        coefficient = 1 if (coordinates[0] + coordinates[1]) % 2 == 0 else -1
+        charge_hamiltonian.add_term(I_term, coefficient)
+        charge_hamiltonian.add_term(Z_term, -1)
+      
+        return self.measurer.expected_value_hamiltonian(charge_hamiltonian, circuit, shots)
+    
+    def charge_total(self, circuit, shots = 1024):
+        total_charge = 0
+        for x in range(self.lattice.L_x):
+            for y in range(self.lattice.L_y):
+                total_charge += self.charge_n((x, y), circuit, shots)
+        return total_charge
