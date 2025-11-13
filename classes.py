@@ -1,5 +1,14 @@
 from modules import *
 
+#
+# Fermion qubits sit on the left end of the circuit
+# This is the right hand of my Pauli strings
+# Mine are in order 0, 1, ..., n-1
+# But all matrices are calculated as if the tensor product is ordered as:
+# - M_{n-1} \otimes M_{n-2} \otimes ... \otimes M_0
+# - This is consistent with qiskit for results, but the inputs are the opposite
+#
+
 def multiply_pauli_strings(p1, p2):
     result = []
     phase = 1+0j
@@ -46,9 +55,6 @@ def possible_plaquettes(lattice):
 
 class Lattice:
     def __init__(self, L_x, L_y, gauge_truncation):
-
-        # Need to add link indexing
-
         if L_x*L_y % 2 == 1:
             raise ValueError(f"L_x * L_y must be even")    
         self.L_x = L_x
@@ -214,9 +220,6 @@ class CircuitBuilder:
         self.circuit.barrier()
         return self
 
-    ## I know that this gauge section is not completely right yet
-    # We would have to consider the direction of the connections that are being examined, i.e., U_{\mu,x}
-
     def gauge_gate_2(self, thetas, start_qubit):
         self.circuit.ry(thetas[0], start_qubit)
         self.circuit.cry(thetas[1], start_qubit, start_qubit+1)
@@ -292,9 +295,6 @@ class Measurements:
     
 class ObservableCalculator:
     def __init__(self, lattice, measurement_manager):
-        #
-        # Fermion qubits sit on the left end of the circuit
-        #
         self.lattice = lattice
         self.measurer = measurement_manager
     
@@ -316,3 +316,4 @@ class ObservableCalculator:
             for y in range(self.lattice.L_y):
                 total_charge += self.charge_n((x, y), circuit, shots)
         return total_charge
+
