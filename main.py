@@ -13,19 +13,26 @@ parameters = {
     'L_x': 2,
     'L_y': 2,
     'gauge_truncation': 1,
+    'n_fermion_layers' : 1,
+    'shots': 10000,
     'm': 1.0,
     'g': 1.0,
     'a': 1.0
 }
 
-
-# Believe I have the right Hamiltonian now
-# Need to now check their simulation parameters and set up my own
+print("RUNNING")
 
 
+# Now need to build a nice VQE
+circuit, observables, thetas, total_thetas = initiate_circuit_observables(parameters['L_x'],parameters['L_y'],parameters['n_fermion_layers'],parameters['gauge_truncation'])
+thetas_values = [1.0]*total_thetas
 
 hamiltonian = generate_qed_hamiltonian(parameters)
-hamiltonian.latex_print()
 
-    
+def thetas_only_wrapper(thetas_values):
+    return qed_vqe(thetas_values, thetas, hamiltonian, circuit, observables, parameters['shots'])
+
+for _ in range(10):
+    value = thetas_only_wrapper(thetas_values)
+    print(value)
     
