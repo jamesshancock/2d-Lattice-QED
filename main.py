@@ -29,13 +29,7 @@ circuit, observables, thetas, total_thetas, n_qubits = initiate_circuit_observab
 thetas_values = [np.random.uniform(0,1)]*total_thetas
 
 hamiltonian = generate_qed_hamiltonian(parameters)
-hamiltonian.latex_plot(save=True)
 
-
-
-
-
-'''
 def thetas_only_wrapper(thetas_values):
     cost = qed_vqe(thetas_values, thetas, hamiltonian, circuit, observables, parameters['shots'])
     print(cost)
@@ -53,4 +47,3 @@ def get_state_counts(thetas_values, thetas, circuit, observables, n_qubits, shot
 print(get_state_counts(mini.x, thetas, circuit, observables, n_qubits, parameters['shots']))
 
     
-'''
